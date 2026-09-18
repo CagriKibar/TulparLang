@@ -7,7 +7,10 @@
 #pragma once
 #include <cstdint>
 
+#include "content/gi.hpp"
 #include "content/model.hpp"
+#include "content/particles.hpp"
+#include "content/primitives.hpp"
 #include "content/scene_blob.hpp"
 #include "core/memory/arena.hpp"
 #include "renderer/renderer.hpp"
@@ -56,7 +59,11 @@ public:
   // Kaynak yollari `dir`e gore (sahne dosyasinin dizini). Yuklenemeyen kaynak
   // atlanir (rapor), sahne yine calisir. view'in bellegi yasamaya devam etmeli.
   bool init(Arena &arena, renderer::Renderer &r, const SceneBlobView &view, const char *dir);
-  // Dunya isigi + golge hacmi renderer'a.
+  // Dunya isigi + golge hacmi renderer'a. GI bake edilmisse (SceneGi::ok())
+  // duz SceneWorld.ambient yerine sahne sinirlarinin ORTASINDA orneklenen
+  // probe degeri kullanilir (kaba -- kare basina TEK ornek, per-pixel DEGIL;
+  // bkz. gi.hpp'nin runtime sorgu sozlesmesi). Bake yoksa davranis eskisiyle
+  // BIT-TAM ayni (pozitif kontrol: gi_.ok() false doner).
   void apply_world(renderer::Renderer &r) const;
   // Govdeler fizige (bir kez). Donus: eklenen govde.
   uint32_t spawn(sim::Physics &ph);
@@ -88,6 +95,10 @@ private:
   bool bodies_live_ = false;
   PoseScratch *pose_scratch_ = nullptr;
   SceneRuntimeStats stats_;
+  SceneGi gi_; // ok()==false (bake yok) ise apply_world eski davranista kalir
+  ParticleSystem particles_;
+  renderer::MeshHandle prims_[kPrimitiveSlotCount] = {};
+  renderer::MaterialHandle entity_mats_[kSceneMaxEntities] = {};
 };
 
 } // namespace tulpar::engine::content

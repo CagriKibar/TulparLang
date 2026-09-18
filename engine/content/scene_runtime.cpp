@@ -10,6 +10,7 @@
 
 #include "content/gltf.hpp"
 #include "content/hash.hpp"
+#include "content/primitives.hpp"
 
 namespace tulpar::engine::content {
 
@@ -20,6 +21,7 @@ Quat q4(const float *f) { return {f[0], f[1], f[2], f[3]}; }
 
 bool SceneRuntime::init(Arena &arena, renderer::Renderer &r, const SceneBlobView &view, const char *dir) {
   view_ = view;
+  gi_.init(view); // probe yoksa ok()==false doner, apply_world duz ambient'a duser
   stats_ = SceneRuntimeStats{};
   bodies_live_ = false;
   body_ids_ = view.h->body_count ? arena.alloc_array<sim::BodyId>(view.h->body_count) : nullptr;
@@ -36,12 +38,27 @@ bool SceneRuntime::init(Arena &arena, renderer::Renderer &r, const SceneBlobView
     if (have_[i]) stats_.assets_loaded++;
     else { stats_.assets_failed++; std::printf("[scene_runtime] kaynak yuklenemedi: %s (%s)\n", path, models_[i].error); }
   }
+  
+  // Ilkel (prosedurel) mesh tablosu: editor de AYNI fonksiyonu cagirir, yoksa
+  // ayni geometri iki yerde iki tabloya baglanir ve biri kacinilmaz sekilde
+  // geride kalir (bkz. content/primitives.hpp).
+  build_primitive_meshes(r, prims_);
+
   return true;
 }
 
 void SceneRuntime::apply_world(renderer::Renderer &r) const {
   const SceneWorld w = view_.world();
-  r.set_light(normalize(w.sun_dir), w.ambient, w.sun_diffuse);
+  Vec3 ambient = w.ambient;
+  if (gi_.ok()) {
+    // Kaba ornek: sahne AABB'sinin ortasi, yukari bakan normal. Per-pixel
+    // DEGIL (Tier 2 takip planinda) -- yine de duz sabitten daha dogru, ve
+    // bake yoksa (ok()==false) bu dal hic girilmez, eski deger korunur.
+    const Vec3 lo{view_.h->bounds_lo[0], view_.h->bounds_lo[1], view_.h->bounds_lo[2]};
+    const Vec3 hi{view_.h->bounds_hi[0], view_.h->bounds_hi[1], view_.h->bounds_hi[2]};
+    ambient = gi_.sample((lo + hi) * 0.5f, {0, 1, 0});
+  }
+  r.set_light(normalize(w.sun_dir), ambient, w.sun_diffuse);
   r.set_shadow_volume(w.shadow_center, w.shadow_radius, w.shadow_depth);
 }
 
@@ -101,11 +118,32 @@ void SceneRuntime::draw(renderer::Renderer &r, Vec3 cam_pos, float time_s, const
   lod.distance2 = 34.0f;
   for (uint32_t i = 0; i < view_.h->draw_count; i++) {
     const SceneBlobDraw &d = view_.draws[i];
-    if (d.asset >= kSceneMaxAssets || !have_[d.asset]) continue;
-    const Model &mdl = models_[d.asset];
-    const UploadedModel &up = ups_[d.asset];
     const SceneBlobEntity &e = view_.entities[d.entity];
     const Mat4 m = entity_matrix(d.entity, ph);
+    
+    if (d.primitive >= 0 && d.primitive < (int32_t)kPrimitiveSlotCount && prims_[d.primitive].valid()) {
+      renderer::PbrParams pbr;
+      pbr.metallic = d.metallic;
+      pbr.roughness = d.roughness;
+      pbr.reflectance = d.reflectance;
+      pbr.emissive = Vec3{d.emissive[0], d.emissive[1], d.emissive[2]};
+      pbr.emissive_strength = d.emissive_strength;
+      if (!entity_mats_[d.entity].valid()) {
+        entity_mats_[d.entity] = r.create_material(r.default_texture(), Vec3{1,1,1}, pbr);
+      } else {
+        r.set_material_pbr(entity_mats_[d.entity], pbr);
+      }
+      r.draw(prims_[d.primitive], entity_mats_[d.entity], m, v3(d.tint));
+      stats_.draws++;
+      continue;
+    }
+    
+    if (d.asset < 0 || (uint32_t)d.asset >= kSceneMaxAssets || !have_[d.asset]) continue;
+    const Model &mdl = models_[d.asset];
+    const UploadedModel &up = ups_[d.asset];
+    // e / m dongunun BASINDA kuruldu; burada ikinci kez tanimlamak ayni
+    // kapsamda yeniden bildirimdir ve derlemeyi kirar (ilkel dali eklenirken
+    // eski satirlar yukari tasinmis ama asagidakiler silinmemis).
     bool drew = false;
     if (e.anim >= 0 && pose_scratch_) {
       const SceneBlobAnim &a = view_.anims[e.anim];
